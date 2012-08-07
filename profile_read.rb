@@ -3,7 +3,7 @@ require 'mail'
 require 'debugger'
 require 'axlsx'
 require 'roo'
-require 'SqlServer'
+require 'tiny_tds'
 
 class Profile_Reader
 
@@ -43,22 +43,19 @@ class Profile_Reader
 	end
 	
 	def modify_file filename
+		debugger
 		p = Excelx.new filename
 		#puts "\t", p.sheets
 		p.sheets.each do |sheet|
-			@nids << p.column(1, sheet)
+			@nids << p.column(1)
+			break
 		end
 		
-		# Replace MY_DSN with the name of your ODBC data
-		# source. Replace and dbusername with dbpassword with
-		# your database login name and password.
-
-		db = SqlServer.new( { :host =>     '', 
-							 :user_name => '', 
-							 :password =>  '', 
-							 :database =>  'rightel' } )
-		db.open
-		names = db.query("WITH t1 AS( 
+		client = TinyTds::Client.new(:username => '', 
+									 :password => '@!', 
+									 :host => '2')
+		puts @nids.join(",")
+		query = "WITH T1 AS( 
 							SELECT 
 								(ROW_NUMBER() OVER(PARTITION BY NationalNo ORDER BY nationalno ) )AS row,
 								registrationlevel, registrationdate, NationalNo,msisdn,firstname,LastName,Nationality, 
@@ -85,16 +82,18 @@ class Profile_Reader
 								Title,IdentityNo,IssuePlace,MaritalStatus,FatherName,Birthdate,job,EducationLevel,EMail,PostalCode,CustomerType,
 								MobileNo,Tel,Province,City,ad1,Ave,ad2,Street,ad3,Description,Block,BuildingNo,Floor,Unit,MunicipalityRegion,ServiceType,
 								DepositAmount,Service_List,provisiondate,IsCommitted,DepositBank,DepositDate,Packages,Delivery_Method 
-						FROM t1 
-						WHERE nationalno IN ( 10417125 ) AND registrationlevel =1
-						ORDER BY NationalNo ")
-		names.each { |name| puts "#{name['NationalNo']}, #{name['msisdn']} #{name['firstname']}" } 
-		
+						FROM T1 
+						WHERE nationalno IN ( "+@nids.join(",")+" ) AND registrationlevel =1
+						ORDER BY NationalNo "
+		puts query
+		result = client.execute(query)
+		debugger
+		result.each { |row| puts row.values } 
 		#p.serialize('simple.xlsx')
 	end
 	
 end
 
-reader = Profile_Reader.new('','')
+reader = Profile_Reader.new('j.','@!')
 #reader.email_read
 reader.process_file
