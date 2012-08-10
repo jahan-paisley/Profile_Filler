@@ -1,24 +1,42 @@
-﻿require 'net/pop'
+﻿require 'rubygems'
+require 'net/pop'
+require 'net/imap'
 require 'mail'
 require 'debugger'
 require 'axlsx'
 require 'roo'
 require 'tiny_tds'
 require 'date'
+require 'log4r'
+
 
 class Profile_Reader	
+  
+	include Log4r
 	
 	def initialize(username, password)
 		@username, @password , @nids = username, password, Array.new	
+		@log = Logger.new 'log'; @log.outputters = Outputter.stdout
 	end
 
 	def email_read
-		pop = Net::POP3.new 'mail.tamintelecom.ir'
-		pop.enable_ssl(:verify_mode=> OpenSSL::SSL::VERIFY_NONE)
-		pop.start @username, @password
-		pop.each_mail.reverse_each.each_with_index do |m, i|
-			mail = Mail.new m.pop
-			puts "processing #{mail.subject}"
+	  begin
+	    imap = Net::IMAP.new('mail.tamintelecom.ir',:ssl=>{:verify_mode=> OpenSSL::SSL::VERIFY_NONE}) 
+      msg = imap.login(@username, @password)       
+	  rescue Exception => e
+	    puts e
+	  end
+    imap.select("INBOX")
+    latest_saved_file_date = Dir.entries("./inbox/").map { |c| File.stat("./inbox/"+c).ctime }.max
+    start = (latest_saved_file_date || Time.now.prev_year)
+    sstart = start.to_datetime.prev_year.strftime("%d-%b-%Y")
+    eend = Time.now.strftime("%d-%b-%Y")
+    
+    @log.info "start: "+ sstart+ "\tend: "+  eend
+    messages = imap.search(["FROM", "bassam", "BEFORE",eend , "SINCE", sstart])
+    messages.each do |msg_id|
+      mail = Mail.new imap.fetch(msg_id, "RFC822")[0].attr["RFC822"]
+      puts "processing #{mail.subject}"
 			next unless mail.from.to_s.downcase.include? 'bassam' and mail.has_attachments?
 			mail.attachments.select {|att| att.filename.end_with?('.xlsx') and (att.filename.downcase.include?("order") or att.filename.downcase.include?("profile"))}.each do |attachment|
 				filename = attachment.filename
@@ -30,13 +48,14 @@ class Profile_Reader
 				end
 		  end
 		end
-			
+		imap.logout 
+    imap.disconnect
 	end
 	
 	def process_file
-	  #debugger
+	  
 		Dir["./inbox/*.xlsx"].each do |file| 
-			puts "reading file:", file
+			puts "reading:"+ file
 			modify_file file
 		end
 	end
@@ -93,28 +112,36 @@ class Profile_Reader
 		new_excel = Axlsx::Package.new
 		shs_data = {}
 		
-		return if excel.cell(2,'A').downcase.include? 'nationalno' and 
-		#debugger
-		1.upto(excel.sheets.length) do |i|
+		return unless excel.cell(2,'A').downcase.include? 'national' 
+		
+		0.upto(excel.sheets.length-1) do |i|
+		  excel.default_sheet = excel.sheets[i]  
 			key = excel.sheets[i].to_s
-			next if excel.column(1,excel.sheets[i]) == nil or  !(/\d+/ =~ excel.column(1,excel.sheets[i])[2].to_s) 
+			next if excel.first_row.nil? or !(/\d+/ =~ excel.cell(3,'A').to_s) 
 			nids = excel.column(1,excel.sheets[i])[2..-1]
 			msisdns = excel.column(2,excel.sheets[i])[2..-1]
 			iccids = excel.column(3,excel.sheets[i])[2..-1]
 			shs_data[key] = nids.zip(msisdns,iccids)
 		end
+		excel.default_sheet = excel.sheets[0]
 		shs_data.each do |sheet_name, sh_data| 
 		  next if sh_data.length < 1 
 		  result = get_db_info sh_data 
 	    new_excel.workbook do |wb|
 			  wb.add_worksheet(:name => sheet_name) do |ws|
-				  result.each_with_index do |row,i| 			  
-					  #debugger
+				  #debugger
+				  result.each_with_index do |row,i| 
 					  if i == 0 then
 					    ws.add_row excel.row(1)
 					    ws.add_row excel.row(2)
 					  end 
-					  ws.add_row sh_data.find{|item| item[0] == row.values[0]}.concat(row.values[2..-1])
+					  #debugger if filename.include?("Cust Profile_CRM_online Payment_91051016")
+					  begin
+					    ws.add_row sh_data.find{|item| Integer(item[0]) == Integer(row.values[0])}.concat(row.values[2..-1]) 
+					  rescue
+					    @log.error "\n\n\n\terror for nationalno: "+row.values[0].to_s() + "in file:"+ filename
+					    ws.add_row []
+					  end
 				  end
 			  end
 		  end
@@ -126,6 +153,6 @@ class Profile_Reader
 	end
 end
 
-reader = Profile_Reader.new('','')
-reader.email_read
+reader = Profile_Reader.new('j.zinedine','')
+#reader.email_read
 reader.process_file
