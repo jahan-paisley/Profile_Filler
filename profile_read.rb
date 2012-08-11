@@ -1,5 +1,4 @@
 ﻿require 'rubygems'
-require 'net/pop'
 require 'net/imap'
 require 'mail'
 require 'debugger'
@@ -8,17 +7,18 @@ require 'roo'
 require 'tiny_tds'
 require 'date'
 require 'log4r'
+require 'net/smtp'
 
-class Profile_Reader	
+class Profile_Reader
 	
 	include Log4r
-	
+
 	def initialize()
 		@email_params = {:username=> '', :password=> '', :host=> ''}
 		@sql_params = {:username=> '', :password=> '', :host=> ''}
-  	@log = Logger.new 'log'; @log.outputters = Outputter.stdout
-  	@path = './inbox/'
-  	@keywords= ['order', 'profile']
+		@log = Logger.new 'log'; @log.outputters = Outputter.stdout
+		@path = './inbox/'
+		@keywords= ['order', 'profile']
 	end
 
 	def set_dates
@@ -27,7 +27,7 @@ class Profile_Reader
 		start = (last_date || Time.now.prev_year)
 		sstart = start.to_datetime.prev_year.strftime(format)
 		eend = Time.now.strftime(format)
-		return sstart, eend 
+	    return sstart, eend 
 	end
 	
 	def email_read
@@ -149,9 +149,28 @@ class Profile_Reader
 		new_file_path = './'+ File.basename(file_path, ".xlsx")+ "_Filled_#{ DateTime.now.to_s.gsub(/:/,'')}.xlsx"
 		puts "writig #{new_file_path}"
 		new_excel.serialize "#{new_file_path}"
+		@files ||= []
+		@files << new_file_path
+	end
+	def send_files_to 
+		smtp = Net::SMTP.new(@email_params[:host],25)
+		
+		smtp.enable_ssl 
+		#smtp.enable_starttls_auto 
+		smtp.start('localhost',@email_params[:username],@email_params[:password],:login) do
+				# Use the SMTP object smtp only in this block.
+				mail = Mail.new
+				mail.from = 'no-reply@rightel.ir'
+				mail.to = 'j.zinedine@rightel.ir'
+				mail.body = 'this is an automaticly generated email'
+				#@files.each {|o| mail.add_file o} 
+				smtp.sendmail(mail, mail.from,mail.to)
+		end
 	end
 end
 
 reader = Profile_Reader.new
-reader.email_read
-reader.process_file
+# reader.email_read
+#reader.process_file
+reader.send_files_to 
+
