@@ -1,19 +1,19 @@
-﻿require 'rubygems'
-require 'net/imap'
+﻿require 'net/imap'
 require 'mail'
 require 'debugger'
 require 'axlsx'
 require 'roo'
 require 'tiny_tds'
 require 'date'
-require 'log4r'
 require 'net/smtp'
+require 'log4r'
+require 'openssl'
 
 class Profile_Reader
 	
 	include Log4r
 
-	def initialize()
+	def initialize 
 		@email_params = {:username=> '', :password=> '', :host=> ''}
 		@sql_params = {:username=> '', :password=> '', :host=> ''}
 		@log = Logger.new 'log'; @log.outputters = Outputter.stdout
@@ -27,7 +27,7 @@ class Profile_Reader
 		start = (last_date || Time.now.prev_year)
 		sstart = start.to_datetime.prev_year.strftime(format)
 		eend = Time.now.strftime(format)
-	    return sstart, eend 
+	  return sstart, eend 
 	end
 	
 	def email_read
@@ -38,30 +38,31 @@ class Profile_Reader
 			puts e
 		end
 		imap.select("INBOX")
-		sstart, eend = set_dates
-		@log.info "start: "+ sstart+ "\tend: "+	 eend
-		messages = imap.search(["FROM", "bassam", "BEFORE",eend , "SINCE", sstart])
+		sstart, eend = set_dates()
+		@log.info ("start: "+ sstart+ "\tend: "+	 eend)
+		messages = imap.search(["FROM", "bassam", "SINCE", sstart, "BEFORE",eend])
 		messages.each do |msg_id|
-			mail = Mail.new imap.fetch(msg_id, "RFC822")[0].attr["RFC822"]
+			mail = Mail.new (imap.fetch(msg_id, "RFC822")[0].attr["RFC822"])
 			puts "processing #{mail.subject}"
 			next unless mail.has_attachments?
 			mail.attachments.select{|att| att.filename.end_with?('.xlsx') and @keywords.any?{|key| att.filename.downcase.include?(key)}}.each do |att|
 				puts "\n\twriting attachment: #{att.filename}"
 				begin
 					File.open(@path + att.filename, "w+b", 0644) {|f| f.write att.body.decoded}
-					rescue Exception=> e
+				rescue Exception=> e
 						puts "Unable to save data for #{att.filename} because #{e.message}"
 				end
 			end
 		end
 		imap.logout 
 		imap.disconnect
+		exit
 	end
 	
 	def process_file		
 		Dir[@path+"*.xlsx"].each do |file| 
 			puts "reading:"+ file
-			modify_file file
+			modify_file (file)
 		end
 	end
 	
@@ -140,7 +141,7 @@ class Profile_Reader
 							ws.add_row sh_data.find{|item| Integer(item[0]) == Integer(row.values[0])}.concat(row.values[2..-1]) 
 						rescue
 							@log.error "\n\n\n\terror for nationalno: "+row.values[0].to_s() + "in file:"+ file_path
-							ws.add_row []
+							ws.add_row [ ]
 						end
 					end
 				end
@@ -152,25 +153,48 @@ class Profile_Reader
 		@files ||= []
 		@files << new_file_path
 	end
-	def send_files_to 
-		smtp = Net::SMTP.new(@email_params[:host],25)
+	
+	def send_files_to
+	  context = OpenSSL::SSL::SSLContext.new ("SSLv23_client")
+		context.verify_mode = OpenSSL::SSL::VERIFY_NONE
+		smtp = Net::SMTP.new(@email_params[:host], 25)
 		
-		smtp.enable_ssl 
-		#smtp.enable_starttls_auto 
-		smtp.start('localhost',@email_params[:username],@email_params[:password],:login) do
-				# Use the SMTP object smtp only in this block.
-				mail = Mail.new
-				mail.from = 'no-reply@rightel.ir'
-				mail.to = 'j.zinedine@rightel.ir'
-				mail.body = 'this is an automaticly generated email'
-				#@files.each {|o| mail.add_file o} 
-				smtp.sendmail(mail, mail.from,mail.to)
-		end
+		smtp.enable_ssl context
+		#smtp.enable_starttls_auto
+		#puts smtp.auth_plain @email_params[:username],@email_params[:password] || "none 1"
+		#puts smtp.auth_login @email_params[:username],@email_params[:password] || "none 2"
+		#puts smtp.auth_cram_md5 @email_params[:username],@email_params[:password] || "none 3"
+		#begin
+  	#debugger
+  	smtp.start('localhost',@email_params[:username],@email_params[:password], :plain) 
+  		#do
+  				# Use the SMTP object smtp only in this block.
+  		#		mail = Mail.new
+  		#		mail.from = 'no-reply@rightel.ir'
+  		#		mail.to = 'j.zinedine@rightel.ir'
+  		#		mail.body = 'this is an automaticly generated email'
+  		#		s#@files.each {|o| mail.add_file o} 
+  		#		smtp.sendmail(mail.body, mail.from,mail.to)
+  		#end
+	  #rescue Exception => e
+	  #  p e
+	  #end
+	end
+	def test_socket
+	   s = timeout(30) { TCPSocket.open('mail.tamintelecom.ir',25) } 
+	   @ssl_context = Net::SMTP.default_ssl_context
+	   @ssl_context.verify_mode = OpenSSL::SSL::VERIFY_NONE
+	   s = OpenSSL::SSL::SSLSocket.new(s, @ssl_context)
+	   
+     #logging "TLS connection started"
+     s.sync_close = true
+     s.connect
+     s.writeline 'HELO mail.tamintelecom.ir'
 	end
 end
 
 reader = Profile_Reader.new
-# reader.email_read
+#reader.email_read
 #reader.process_file
-reader.send_files_to 
-
+#reader.send_files_to 
+reader.test_socket
