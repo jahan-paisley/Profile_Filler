@@ -1,18 +1,17 @@
-﻿require 'net/imap'
+require 'net/imap'
 require 'mail'
 require 'debugger'
 require 'axlsx'
 require 'roo'
 require 'tiny_tds'
 require 'date'
+require 'time'
 require 'net/smtp'
 require 'log4r'
 require 'openssl'
 
 class Profile_Reader
-	
 	include Log4r
-
 	def initialize 
 		@email_params = {:username=> '', :password=> '', :host=> '', :senders => ['shahmoradi','bassam']}
 		@sql_params = {:username=> '', :password=> '', :host=> ''}
@@ -20,43 +19,31 @@ class Profile_Reader
 		@path = './inbox/'
 		@keywords= ['order', 'profile']
 	end
-
-	def set_dates
-		format = "%d-%b-%Y"
-		last_date = Dir.entries(@path).map { |c| File.stat(@path+c).ctime }.max
-		start = (last_date || Time.now.prev_year)
-		sstart = start.to_datetime.prev_year.strftime(format)
-		eend = Time.now.strftime(format)
-	  return sstart, eend 
-	end
 	
 	def email_read
-	  puts "start searching emails ..."
-	  senders = []
+	  puts "\nstart searching emails ...\n"
+	  senders,@subjects = [], []
 		@email_params[:senders].each_with_index do |o, i| 
-		  senders<< "FROM"<< o 
-		  senders<< "OR" if i != @email_params[:senders].length - 1
+		  senders << "FROM" << o 
+		  senders << "OR" if i != @email_params[:senders].length - 1
 		end
-
-		
-		begin
-			imap = Net::IMAP.new(@email_params[:host],:ssl=>{:verify_mode=> OpenSSL::SSL::VERIFY_NONE}) 
-			msg = imap.login(@email_params[:username],@email_params[:password])			 
-		rescue Exception=> e
-			puts e
-		end
+		imap = Net::IMAP.new(@email_params[:host],:ssl=>{:verify_mode=> OpenSSL::SSL::VERIFY_NONE}) 
+		imap.login(@email_params[:username], @email_params[:password])
 		imap.select("INBOX")
-		sstart, eend = set_dates()
-		p ("start: "+ sstart+ "\tend: "+	 eend)
-		keywords = senders + ["SINCE", sstart, "BEFORE",eend]
-    p keywords
-		messages = imap.search(keywords)
-		messages.each do |msg_id|
+		sstart, eend = set_dates
+		puts "start: "+ sstart+ "\tend: "+	 eend
+		
+		keywords = ["OR","FROM","bassam","FROM","shahmoradi", "SINCE", "23-Aug-2011", "BEFORE", "24-Aug-2012"] 
+		#keywords = senders + ["SINCE", sstart, "BEFORE",eend]
+		msgs = imap.search(keywords)
+		puts "found #{msgs.length} messages ..."
+		msgs.each do |msg_id|
 			mail = Mail.new (imap.fetch(msg_id, "RFC822")[0].attr["RFC822"])
-			puts "processing #{mail.subject}"
+			puts "\tProcessing #{mail.subject} ..."
+			@subjects << mail.subject
 			next unless mail.has_attachments?
 			mail.attachments.select{|att| att.filename.end_with?('.xlsx') and @keywords.any?{|key| att.filename.downcase.include?(key)}}.each do |att|
-				puts "\n\tdownloading attachment: #{att.filename}"
+				puts "\tdownloading attachment: #{att.filename}"
 				begin
 					File.open(@path + att.filename, "w+b", 0644) {|f| f.write att.body.decoded}
 				rescue Exception=> e
@@ -66,16 +53,25 @@ class Profile_Reader
 		end
 		imap.logout 
 		imap.disconnect
-		p "Done searching emails ..."
+		puts "\nDone searching emails"
+	end
+	
+	def set_dates
+		format = "%d-%b-%Y"
+		last_date = Dir.entries(@path).map { |c| File.stat(@path+c).ctime }.max
+		start = (last_date || Time.now.prev_year)
+		sstart = start.to_datetime.prev_year.strftime(format)
+		eend = DateTime.now.next_day.strftime(format)
+	  return sstart, eend 
 	end
 	
 	def process_file
-	  p "\n processing files ..."		
+	  puts "\nProcessing files ...\n"		
 		Dir[@path+"*.xlsx"].each do |file| 
 			puts "reading:"+ file
 			modify_file (file)
 		end
-	  puts "\n Done, processing files ..."		
+	  puts "\nDone, processing files\n"		
 	end
 	
 	def get_db_info sh_data
@@ -168,31 +164,23 @@ class Profile_Reader
 		@files << new_file_path
 	end
 	
-	def send_files_to
-	  smtp = { :address => @email_params[:host], 
-	           :port => 25, 
-	           :domain => @email_params[:host], 
-	           :user_name => @email_params[:username], 
-	           :password => @email_params[:password], 
-	           :enable_starttls_auto => true, 
-	           
-	           :openssl_verify_mode => 'none' }
-	           
-    Mail.defaults { delivery_method :smtp, smtp }
-	  #context = Net::SMTP.default_ssl_context
-		#context.verify_mode = OpenSSL::SSL::VERIFY_NONE
-		#smtp = Net::SMTP.new(@email_params[:host], 25)
-		#smtp.enable_starttls_auto
+	def send_files_to     
+	  context = Net::SMTP.default_ssl_context
+		context.verify_mode = OpenSSL::SSL::VERIFY_NONE
+		smtp = Net::SMTP.new(@email_params[:host], 25)
+		smtp.enable_starttls_auto
   	begin
-  	#  smtp.start('localhost',@email_params[:username],@email_params[:password], :login) do
+      smtp.start('localhost',@email_params[:username],@email_params[:password], :login) do
   				m = Mail.new
   				m.from = 'j.zinedine@tamintelecom.ir'
   				m.to = 'j.zinedine@tamintelecom.ir'
-  				m.body = "This is a test message."
-  				m.subject = "CRM Export"
-  				@files.each {|o| m.add_file o} 
-  				m.deliver!
-  		#end
+  				
+  				m.body = "This is an automatically generated email."
+  				m.subject = @subjects.join(" | ")
+  				@files.each {|f| m.add_file f}
+  				puts m.from
+  				smtp.sendmail m.to_s, 'j.zinedine@tamintelecom.ir','j.zinedine@tamintelecom.ir'
+  		end
 	  rescue Exception => e
 	    p e
 	  end
@@ -207,10 +195,12 @@ class Profile_Reader
      s.puts 'HELO mail.tamintelecom.ir'
 	   puts s.recvmsg
 	end
+	
 end
 
 reader = Profile_Reader.new
-#reader.email_read
+reader.email_read
 reader.process_file
 reader.send_files_to 
+puts "\nDone."
 #reader.test_socket
