@@ -1,3 +1,4 @@
+# encoding: utf-8
 require 'net/imap'
 require 'mail'
 require 'debugger'
@@ -9,41 +10,51 @@ require 'time'
 require 'net/smtp'
 require 'log4r'
 require 'openssl'
+require 'zip/zip'
 
 class Profile_Reader
 	include Log4r
 	def initialize 
-		@email_params = {:username=> '', :password=> '', :host=> '', :senders => ['shahmoradi','bassam']}
-		@sql_params = {:username=> '', :password=> '', :host=> ''}
+		@email_params = {:username=> 'example', :password=> 'example', :host=> 'mail.example.ir', :senders => ['shahmoradi','bassam']}
+		@sql_params = {:username=> 'example', :password=> 'example', :host=> '1.1.1.1'}
 		outputters = Outputter.stdout
 		@path = './inbox/'
 		@keywords= ['order', 'profile']
+		@files = []
 	end
 	
 	def email_read
 	  puts "\nstart searching emails ...\n"
 	  senders,@subjects = [], []
-		@email_params[:senders].each_with_index do |o, i| 
-		  senders << "FROM" << o 
-		  senders << "OR" if i != @email_params[:senders].length - 1
+	  
+	  sstart, eend = set_dates
+		puts "start: "+ sstart+ "\tend: "+	 eend
+		if @email_params[:senders].length >1 
+		  senders << "OR"
+		  @email_params[:senders].each{|o| senders << "FROM" << o} 
+		else
+		  senders = @email_params[:senders]  
 		end
 		imap = Net::IMAP.new(@email_params[:host],:ssl=>{:verify_mode=> OpenSSL::SSL::VERIFY_NONE}) 
 		imap.login(@email_params[:username], @email_params[:password])
 		imap.select("INBOX")
-		sstart, eend = set_dates
-		puts "start: "+ sstart+ "\tend: "+	 eend
 		
-		keywords = ["OR","FROM","bassam","FROM","shahmoradi", "SINCE", "23-Aug-2011", "BEFORE", "24-Aug-2012"] 
-		#keywords = senders + ["SINCE", sstart, "BEFORE",eend]
+		#keywords = ["OR","FROM","bassam","FROM","shahmoradi","SINCE", sstart,"BEFORE",eend] 
+		keywords = senders + ["SINCE", sstart, "BEFORE",eend]
 		msgs = imap.search(keywords)
 		puts "found #{msgs.length} messages ..."
+		if msgs.length == 0
+		  puts "no mail found"
+		  exit  
+	  end
+		 
 		msgs.each do |msg_id|
 			mail = Mail.new (imap.fetch(msg_id, "RFC822")[0].attr["RFC822"])
 			puts "\tProcessing #{mail.subject} ..."
 			@subjects << mail.subject
 			next unless mail.has_attachments?
 			mail.attachments.select{|att| att.filename.end_with?('.xlsx') and @keywords.any?{|key| att.filename.downcase.include?(key)}}.each do |att|
-				puts "\tdownloading attachment: #{att.filename}"
+				puts "\t\tdownloading attachment: #{att.filename}"
 				begin
 					File.open(@path + att.filename, "w+b", 0644) {|f| f.write att.body.decoded}
 				rescue Exception=> e
@@ -58,9 +69,9 @@ class Profile_Reader
 	
 	def set_dates
 		format = "%d-%b-%Y"
-		last_date = Dir.entries(@path).map { |c| File.stat(@path+c).ctime }.max
-		start = (last_date || Time.now.prev_year)
-		sstart = start.to_datetime.prev_year.strftime(format)
+		last_date = Dir.entries(@path).select{|o| o.end_with?(".xlsx")}.map{|c| File.stat(@path+c).ctime }.max
+		start = (last_date || Time.now.to_datetime.prev_day.prev_day)
+		sstart = start.strftime(format)
 		eend = DateTime.now.next_day.strftime(format)
 	  return sstart, eend 
 	end
@@ -68,8 +79,8 @@ class Profile_Reader
 	def process_file
 	  puts "\nProcessing files ...\n"		
 		Dir[@path+"*.xlsx"].each do |file| 
-			puts "reading:"+ file
-			modify_file (file)
+			puts "reading:"+ File.basename(file)
+			generate_filled_file (file)
 		end
 	  puts "\nDone, processing files\n"		
 	end
@@ -118,11 +129,8 @@ class Profile_Reader
 		client.execute(query).to_a
 	end
 	
-	def modify_file file_path
-		excel = Excelx.new file_path
-		new_excel = Axlsx::Package.new
-		shs_data = {}
-		
+	def generate_filled_file file_path
+		excel, new_excel, shs_data = Excelx.new file_path,Axlsx::Package.new, {}
 		return unless excel.cell(2,'A').downcase.include? 'national' 
 		
 		0.upto(excel.sheets.length-1) do |i|
@@ -157,14 +165,15 @@ class Profile_Reader
 				end
 			end
 		end
-		new_file_path = './'+ File.basename(file_path, ".xlsx")+ "_Filled_#{ DateTime.now.to_s.gsub(/:/,'')}.xlsx"
-		puts "\twritig #{new_file_path}"
+		new_file_path = './output/'+ File.basename(file_path, ".xlsx")+ "_Filled_#{ DateTime.now.to_s.gsub(/:/,'')}.xlsx"
+		puts "\twritig #{File.basename(new_file_path)}"
 		new_excel.serialize "#{new_file_path}"
-		@files ||= []
 		@files << new_file_path
 	end
 	
-	def send_files_to     
+	def send_files_to  
+	  sleep(2)  
+	  make_zip 
 	  context = Net::SMTP.default_ssl_context
 		context.verify_mode = OpenSSL::SSL::VERIFY_NONE
 		smtp = Net::SMTP.new(@email_params[:host], 25)
@@ -177,7 +186,7 @@ class Profile_Reader
   				
   				m.body = "This is an automatically generated email."
   				m.subject = @subjects.join(" | ")
-  				@files.each {|f| m.add_file f}
+  				m.add_file "./files.zip"
   				puts m.from
   				smtp.sendmail m.to_s, 'j.zinedine@tamintelecom.ir','j.zinedine@tamintelecom.ir'
   		end
@@ -185,6 +194,16 @@ class Profile_Reader
 	    p e
 	  end
 	end
+	
+	def make_zip
+    Zip::ZipOutputStream.open("./files.zip") do |z|
+      @files.each do |f|
+        title = File.basename(f)
+        z.put_next_entry(title)
+        z.print IO.read(f)
+      end
+    end
+  end
 	
 	def test_socket
 	   s = timeout(30) { TCPSocket.open('mail.tamintelecom.ir',25) } 
@@ -195,12 +214,12 @@ class Profile_Reader
      s.puts 'HELO mail.tamintelecom.ir'
 	   puts s.recvmsg
 	end
-	
-end
+  
+end  
+
 
 reader = Profile_Reader.new
 reader.email_read
 reader.process_file
 reader.send_files_to 
 puts "\nDone."
-#reader.test_socket
